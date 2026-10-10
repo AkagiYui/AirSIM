@@ -74,6 +74,19 @@ adb install -r android-standalone/build/android/AirSIM-Android-Standalone-debug.
 
 无线调试地址与端口每次配对都可能变化，示例值不能当作固定设备配置。
 
+## SIP 网关（实验性）
+
+Standalone 可把本机注册到标准 SIP 服务器（RFC 3261，UDP），成为单线路的蜂窝–SIP 网关：
+
+- 蜂窝来电：向 `sip:<来电目标>@服务器` 发起 INVITE，原主叫号码放在 `X-AirSIM-Caller` 头中；SIP 用户接听后 App 接听蜂窝来电并桥接音频。
+- SIP 外呼：服务器向网关发起 `sip:<号码>@网关` 的 INVITE，App 通过 Telecom 拨出，蜂窝接通后回复 200 OK。
+- 媒体：Shizuku PCM 桥的 8 kHz / 20 ms 帧与 G.711 PCMU/PCMA RTP 互转；DTMF 使用 RFC 4733。
+- 挂断、CANCEL 与 BYE 双向同步；同一时间只承载一路通话，其余 INVITE 回复 486。
+
+在 App「设置 → SIP 网关」中开启并填写服务器、端口、网关账号、密码与来电目标，点击「保存并注册」；状态页的「SIP 网关」卡片显示注册与通话状态，详情中列出最近的 `sip_` 日志。配置保存在应用私有存储中；也可用 adb 把 `sip.properties`（键：`enabled`、`server`、`port`、`username`、`password`、`inbound_target`）推送到 `/sdcard/Android/data/com.airsim.phonecontrol.standalone/files/`，App 导入后会删除该文件。
+
+注意：RTP 端口会向 SIP 服务器收发通话音频，超出“PCM 仅监听 loopback/私网”的默认边界；当前实现不含 TLS/SRTP，只应在可信局域网或经 VPN 访问的服务器上使用。公网部署前须限制拨号计划、使用强口令并加密信令与媒体。
+
 ## 从 AVF 版迁移
 
 - Standalone 使用独立包名，不会自动读取旧 AVF 版 App 的本地数据；迁移前记录 Relay、设备 ID 和配对资料。

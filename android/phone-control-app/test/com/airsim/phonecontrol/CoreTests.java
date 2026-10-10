@@ -530,8 +530,53 @@ public final class CoreTests {
 				MainScreenPresentation.recentMatchingLogLines(
 						"push_status ok=true\npcm_probe_failed port=7580\nshizuku_binder_dead",
 						3, "pcm", "shizuku"));
+		sipTests();
         System.out.println("phone-control core tests passed");
     }
+
+	private static void sipTests() {
+		// RFC 2617 section 3.5 Digest example.
+		assertContains(SipMessage.digestAuthorization(
+				"Digest realm=\"testrealm@host.com\", qop=\"auth,auth-int\", "
+						+ "nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\", opaque=\"5ccc069c403ebaf9f0171e9517f40e41\"",
+				"GET", "/dir/index.html", "Mufasa", "Circle Of Life", "0a4f113b"),
+				"response=\"6629fae49393a05397450978507c4ef1\"");
+		byte[] raw = ("INVITE sip:10000@192.0.2.4:5062 SIP/2.0\r\n"
+				+ "v: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKab;rport\r\n"
+				+ "f: <sip:1001@example.test>;tag=t1\r\n"
+				+ "CSeq: 7 INVITE\r\nl: 4\r\n\r\nabcdEXTRA").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+		SipMessage invite = SipMessage.parse(raw, raw.length);
+		assertEquals("INVITE", invite.method);
+		assertEquals("10000", SipMessage.userOf(invite.uri));
+		assertEquals("z9hG4bKab", invite.topBranch());
+		assertEquals("t1", SipMessage.param(invite.header("From"), "tag"));
+		assertEquals(7, invite.cseqNumber());
+		assertEquals("INVITE", invite.cseqMethod());
+		assertEquals("abcd", invite.body);
+		assertEquals("sip:1001@example.test", SipMessage.uriOf(invite.header("From")));
+		for (int payloadType : new int[] {G711.PCMU, G711.PCMA}) {
+			for (int sample = -32768; sample < 32768; sample += 7) {
+				byte[] pcm = {(byte) sample, (byte) (sample >> 8)};
+				byte[] encoded = new byte[1];
+				byte[] decoded = new byte[2];
+				G711.encode(payloadType, pcm, 1, encoded);
+				G711.decode(payloadType, encoded, 0, 1, decoded);
+				int back = (short) ((decoded[0] & 0xff) | (decoded[1] << 8));
+				assertTrue(Math.abs(back - sample) <= Math.max(16, Math.abs(sample) / 14));
+			}
+		}
+		assertEquals("未启用", MainScreenPresentation.sipTileValue("disabled", "idle"));
+		assertEquals("注册中", MainScreenPresentation.sipTileValue("connecting", "idle"));
+		assertEquals("注册失败", MainScreenPresentation.sipTileValue("failed", "idle"));
+		assertEquals("已注册", MainScreenPresentation.sipTileValue("registered", "idle"));
+		assertEquals("通话中", MainScreenPresentation.sipTileValue("registered", "active"));
+		assertEquals("SIP 振铃中", MainScreenPresentation.sipTileValue("registered", "inbound_ringing"));
+		assertContains(MainScreenPresentation.sipStatusDetail(
+				"failed", "认证失败：用户名或密码错误（401）", "gsmgw@sip.example.test:5060", "", "idle"),
+				"原因：认证失败");
+		assertContains(MainScreenPresentation.sipStatusDetail(
+				"disabled", "", "", "", "idle"), "服务器：未配置");
+	}
 
     private static void assertContains(String value, String expected) {
         if (!value.contains(expected)) throw new AssertionError(value + " missing " + expected);

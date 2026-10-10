@@ -67,7 +67,7 @@ public final class MainActivity extends Activity {
     private static final int DANGER = Color.rgb(255, 99, 99);
 
     private enum Page { STATUS, CALLS, DEBUG, SETTINGS }
-    private enum Feature { VOWLAN, AGENT, PCM, PUSH, SHIZUKU }
+    private enum Feature { VOWLAN, AGENT, PCM, PUSH, SHIZUKU, SIP }
 
     private FrameLayout contentHost;
     private LinearLayout bottomBar;
@@ -80,6 +80,13 @@ public final class MainActivity extends Activity {
     private String selectedMode;
     private TextView status;
     private TextView shizukuStatus;
+    private TextView sipStatus;
+    private Switch sipEnabled;
+    private EditText sipServer;
+    private EditText sipPort;
+    private EditText sipUser;
+    private EditText sipPassword;
+    private EditText sipTarget;
 	private TextView installerStatus;
     private TextView pairingStatus;
     private TextView pairingCodeView;
@@ -306,6 +313,15 @@ public final class MainActivity extends Activity {
         secondHealthRow.addView(shizukuTile, weightedWithStart(5));
         root.addView(secondHealthRow, matchWithTop(10));
 
+        if (RuntimeMode.isStandalone(this)) {
+            SipGateway.Status sip = SipGateway.get(this).status();
+            LinearLayout sipTile = healthTile(
+                    "SIP 网关", MainScreenPresentation.sipTileValue(sip.state, sip.call),
+                    android.R.drawable.sym_action_call, SipGateway.Status.REGISTERED.equals(sip.state));
+            sipTile.setOnClickListener(ignored -> showFeatureDetails(Feature.SIP));
+            root.addView(sipTile, matchWithTop(10));
+        }
+
         root.addView(modeSelector(), matchWithTop(14));
 
         TextView pairing = primaryButton(paired ? "重新配对 iPhone" : "配对新 iPhone", BLUE);
@@ -455,6 +471,8 @@ public final class MainActivity extends Activity {
         save.setOnClickListener(ignored -> saveConfiguration());
         agentCard.addView(save, matchWithTop(12));
         root.addView(agentCard, matchWithTop(10));
+
+        if (standaloneRuntime) root.addView(sipSettingsSection());
 
 		if (!standaloneRuntime) {
 		root.addView(sectionTitle("AVF Linux 首次安装"), matchWithTop(22));
@@ -999,6 +1017,7 @@ public final class MainActivity extends Activity {
             case PCM -> "PCM 音频桥详情";
             case PUSH -> "Push / Relay 详情";
             case SHIZUKU -> "Shizuku 详情";
+            case SIP -> "SIP 网关详情";
         };
     }
 
@@ -1064,6 +1083,14 @@ public final class MainActivity extends Activity {
                         ? "Binder 已连接；是否有声音仍需检查 PCM 路由"
                         : "检查 Shizuku 是否运行、AirSIM 授权及 PCM 用户服务是否成功绑定");
                 keywords = new String[]{"shizuku", "local_output"};
+            }
+            case SIP -> {
+                SipGateway.Status sip = SipGateway.get(this).status();
+                details = MainScreenPresentation.sipStatusDetail(
+                        sip.state, sip.detail, sip.server, sip.localAddress, sip.call)
+                        + "\n音频：G.711 PCMU/PCMA 20 ms · DTMF：RFC 4733"
+                        + "\n通话音频仍经由 Shizuku PCM 桥：" + (pcmReady() ? "就绪" : "待启动");
+                keywords = new String[]{"sip_"};
             }
             default -> throw new IllegalStateException("未知功能");
         }
@@ -1281,6 +1308,98 @@ public final class MainActivity extends Activity {
 
     private void refreshStatus() {
         refreshShizukuStatus();
+        refreshSipStatus();
+    }
+
+    private LinearLayout sipSettingsSection() {
+        LinearLayout section = column(0);
+        section.addView(sectionTitle("SIP 网关"), matchWithTop(22));
+        LinearLayout sipCard = card(SURFACE, 22);
+        sipCard.setOrientation(LinearLayout.VERTICAL);
+        sipCard.setPadding(dp(16), dp(16), dp(16), dp(16));
+        sipStatus = label("", 14, TEXT, Gravity.START);
+        sipCard.addView(sipStatus);
+        sipCard.addView(description("把本机注册到标准 SIP 服务器：蜂窝来电转给 SIP 用户接听，SIP 用户也可经本机拨出。"
+                + "单线路；通话音频经 Shizuku PCM 桥。"), matchWithTop(6));
+
+        SipConfig saved = SipConfig.load(this);
+        LinearLayout toggleRow = row();
+        toggleRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout toggleCopy = column(0);
+        toggleCopy.addView(label("启用 SIP 网关", 15, TEXT, Gravity.START));
+        toggleCopy.addView(label("关闭时会先注销当前注册", 12, MUTED, Gravity.START));
+        toggleRow.addView(toggleCopy, weighted());
+        sipEnabled = new Switch(this);
+        sipEnabled.setChecked(saved.enabled);
+        sipEnabled.setThumbTintList(ColorStateList.valueOf(PRIMARY));
+        toggleRow.addView(sipEnabled);
+        sipCard.addView(toggleRow, matchWithTop(14));
+
+        sipCard.addView(overline("服务器"), matchWithTop(14));
+        LinearLayout serverRow = row();
+        sipServer = input("域名或 IP", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        sipServer.setText(saved.host);
+        serverRow.addView(sipServer, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 3));
+        sipPort = input("端口", InputType.TYPE_CLASS_NUMBER);
+        sipPort.setText(Integer.toString(saved.port));
+        LinearLayout.LayoutParams portParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        portParams.leftMargin = dp(8);
+        serverRow.addView(sipPort, portParams);
+        sipCard.addView(serverRow, matchWithTop(6));
+
+        sipCard.addView(overline("网关账号"), matchWithTop(12));
+        sipUser = input("用户名，例如 gsmgw", InputType.TYPE_CLASS_TEXT);
+        sipUser.setText(saved.username);
+        sipCard.addView(sipUser, matchWithTop(6));
+        sipPassword = input(saved.hasPassword() ? "密码已保存，留空则不修改" : "密码",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        sipCard.addView(sipPassword, matchWithTop(10));
+
+        sipCard.addView(overline("来电目标"), matchWithTop(12));
+        sipTarget = input("蜂窝来电 INVITE 的目标，默认 inbound", InputType.TYPE_CLASS_TEXT);
+        sipTarget.setText(saved.inboundTarget);
+        sipCard.addView(sipTarget, matchWithTop(6));
+
+        TextView save = primaryButton("保存并注册", BLUE);
+        save.setOnClickListener(ignored -> saveSipConfiguration());
+        sipCard.addView(save, matchWithTop(14));
+        section.addView(sipCard, matchWithTop(10));
+        refreshSipStatus();
+        return section;
+    }
+
+    private void saveSipConfiguration() {
+        try {
+            SipConfig.save(this, sipEnabled.isChecked(), sipServer.getText().toString(),
+                    sipPort.getText().toString(), sipUser.getText().toString(),
+                    sipPassword.getText().toString(), sipTarget.getText().toString());
+        } catch (IllegalArgumentException error) {
+            toast(error.getMessage());
+            return;
+        }
+        sipPassword.setText("");
+        if (SipConfig.load(this).hasPassword()) sipPassword.setHint("密码已保存，留空则不修改");
+        SipGateway gateway = SipGateway.get(this);
+        gateway.start();
+        gateway.reload();
+        toast(sipEnabled.isChecked() ? "SIP 配置已保存，正在注册" : "SIP 网关已关闭");
+    }
+
+    private void refreshSipStatus() {
+        if (sipStatus == null) return;
+        SipGateway.Status sip = SipGateway.get(this).status();
+        sipStatus.setText(MainScreenPresentation.sipStatusDetail(
+                sip.state, sip.detail, sip.server, sip.localAddress, sip.call));
+        sipStatus.setTextColor(SipGateway.Status.REGISTERED.equals(sip.state) ? PRIMARY
+                : SipGateway.Status.FAILED.equals(sip.state) ? DANGER
+                : SipGateway.Status.CONNECTING.equals(sip.state) ? WARNING : TEXT);
+    }
+
+    private void onSipStatusChanged() {
+        if (isFinishing() || isDestroyed()) return;
+        refreshSipStatus();
+        if (currentPage == Page.STATUS && contentHost != null
+                && bottomBar.getVisibility() == View.VISIBLE) showPage(Page.STATUS);
     }
 
     private void refreshShizukuStatus() {
@@ -1597,6 +1716,13 @@ public final class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         refreshShizukuStatus();
+        SipGateway.get(this).setListener(() -> runOnUiThread(this::onSipStatusChanged));
+        refreshSipStatus();
+    }
+
+    @Override protected void onPause() {
+        SipGateway.get(this).setListener(null);
+        super.onPause();
     }
 
     @Override public void onBackPressed() {

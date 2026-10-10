@@ -121,5 +121,7 @@ mkdir -p "$OUT"
 	"$ROOT"/src/com/airsim/phonecontrol/VoWLANNetworkPolicy.java \
 	"$ROOT"/src/com/airsim/phonecontrol/StandaloneLongPoll.java \
 	"$ROOT"/src/com/airsim/phonecontrol/MainScreenPresentation.java \
+  "$ROOT"/src/com/airsim/phonecontrol/SipMessage.java \
+  "$ROOT"/src/com/airsim/phonecontrol/G711.java \
   "$ROOT"/test/com/airsim/phonecontrol/CoreTests.java
 "$JAVA" -cp "$OUT" com.airsim.phonecontrol.CoreTests

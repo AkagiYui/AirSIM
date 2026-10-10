@@ -56,10 +56,48 @@ public final class SipGateway {
     private int registerCseq = 1;
     private boolean registered;
     private long lastRegisterAt;
+    private long lastRegisterResponseAt;
     private boolean registerAuthTried;
+    private int registerExpires = REGISTER_EXPIRES;
+    private long unregisterDeadline;
+    private String failure = "";
 
     private Leg leg;
     private Leg endedInbound;
+
+    private volatile Status status = new Status(Status.DISABLED, "", "", "", Status.CALL_IDLE);
+    private volatile Runnable listener;
+
+    /** Immutable snapshot of the gateway for the UI. */
+    public static final class Status {
+        public static final String DISABLED = "disabled";
+        public static final String CONNECTING = "connecting";
+        public static final String REGISTERED = "registered";
+        public static final String FAILED = "failed";
+        public static final String CALL_IDLE = "idle";
+        public static final String CALL_INBOUND_RINGING = "inbound_ringing";
+        public static final String CALL_OUTBOUND_DIALING = "outbound_dialing";
+        public static final String CALL_ACTIVE = "active";
+
+        public final String state;
+        public final String detail;
+        public final String server;
+        public final String localAddress;
+        public final String call;
+
+        Status(String state, String detail, String server, String localAddress, String call) {
+            this.state = state;
+            this.detail = detail;
+            this.server = server;
+            this.localAddress = localAddress;
+            this.call = call;
+        }
+
+        boolean sameAs(Status other) {
+            return state.equals(other.state) && detail.equals(other.detail) && server.equals(other.server)
+                    && localAddress.equals(other.localAddress) && call.equals(other.call);
+        }
+    }
 
     private SipGateway(Context context) {
         this.context = context.getApplicationContext();
@@ -84,17 +122,46 @@ public final class SipGateway {
 
     /** Called by the InCallService for every de-duplicated Telecom state change. */
     public void onTelecomState(String callId, String direction, String state, String number) {
-        loop.execute(() -> handleTelecom(callId, direction, state, number));
+        loop.execute(() -> {
+            handleTelecom(callId, direction, state, number);
+            publish();
+        });
+    }
+
+    /** Applies saved settings now instead of on the next maintenance tick. */
+    public void reload() {
+        loop.execute(this::maintain);
+    }
+
+    public Status status() {
+        return status;
+    }
+
+    /** Receives a callback (on a background thread) whenever {@link #status()} changes. */
+    public void setListener(Runnable value) {
+        listener = value;
     }
 
     // ---------------------------------------------------------------- registration / socket
 
     private void maintain() {
         try {
-            if (config == null || config.stamp != SipConfig.stamp(context)) {
+            long tick = System.currentTimeMillis();
+            if (unregisterDeadline > 0) {
+                if (tick < unregisterDeadline) return;
+                unregisterDeadline = 0;
+                registerExpires = REGISTER_EXPIRES;
+                closeSocket();
+            }
+            if ((config == null || config.stamp != SipConfig.stamp(context)) && leg == null) {
+                if (config != null && config.enabled && registered && socket != null) {
+                    unregister();
+                    return;
+                }
                 config = SipConfig.load(context);
                 closeSocket();
                 registered = false;
+                failure = "";
                 lastRegisterAt = 0;
                 BridgeLog.info("sip_config_loaded enabled=" + config.enabled
                         + (config.enabled ? " server=" + config.host + ":" + config.port + " user=" + config.username : ""));
@@ -108,14 +175,56 @@ public final class SipGateway {
                 lastRegisterAt = 0;
             }
             long now = System.currentTimeMillis();
+            if (!registered && lastRegisterAt > 0 && lastRegisterResponseAt < lastRegisterAt
+                    && now - lastRegisterAt > 8_000L) {
+                failure = "服务器无响应";
+            }
             if (now - lastRegisterAt >= (registered ? REGISTER_REFRESH_MS : 15_000L)) {
                 registerAuthTried = false;
+                registerExpires = REGISTER_EXPIRES;
                 sendRegister("");
             }
         } catch (Exception error) {
             BridgeLog.error("sip_maintain_failed", error);
+            failure = "网络错误：" + error.getClass().getSimpleName();
+            registered = false;
             closeSocket();
+        } finally {
+            publish();
         }
+    }
+
+    /**
+     * Removes the current registration (Expires: 0) with the old settings, then lets the next
+     * maintenance pass close the socket and apply the new settings.
+     */
+    private void unregister() {
+        registered = false;
+        registerAuthTried = false;
+        registerExpires = 0;
+        sendRegister("");
+        unregisterDeadline = System.currentTimeMillis() + 1_500L;
+        loop.schedule(this::maintain, 1_600L, TimeUnit.MILLISECONDS);
+        BridgeLog.info("sip_unregister_requested");
+    }
+
+    private void publish() {
+        String state;
+        if (config == null || !config.enabled) state = Status.DISABLED;
+        else if (registered) state = Status.REGISTERED;
+        else if (!failure.isEmpty()) state = Status.FAILED;
+        else state = Status.CONNECTING;
+        Leg active = leg;
+        String call = active == null ? Status.CALL_IDLE
+                : active.media != null ? Status.CALL_ACTIVE
+                : active.gsmInbound ? Status.CALL_INBOUND_RINGING : Status.CALL_OUTBOUND_DIALING;
+        String server = config == null || config.host.isEmpty() ? "" : config.username + "@" + config.host + ":" + config.port;
+        String local = socket == null ? "" : localIp + ":" + localPort();
+        Status next = new Status(state, Status.FAILED.equals(state) ? failure : "", server, local, call);
+        if (next.sameAs(status)) return;
+        status = next;
+        Runnable callback = listener;
+        if (callback != null) callback.run();
     }
 
     private String probeLocalIp() throws IOException {
@@ -152,7 +261,10 @@ public final class SipGateway {
                 if (packet.getLength() < 16) continue; // keep-alive CRLFs
                 SipMessage message = SipMessage.parse(packet.getData(), packet.getLength());
                 SocketAddress source = packet.getSocketAddress();
-                loop.execute(() -> handleMessage(message, source));
+                loop.execute(() -> {
+                    handleMessage(message, source);
+                    publish();
+                });
             } catch (IOException error) {
                 if (!active.isClosed()) BridgeLog.error("sip_receive_failed", error);
             } catch (RuntimeException error) {
@@ -171,7 +283,7 @@ public final class SipGateway {
                 .add("Call-ID", registerCallId)
                 .add("CSeq", (registerCseq++) + " REGISTER")
                 .add("Contact", contact())
-                .add("Expires", Integer.toString(REGISTER_EXPIRES))
+                .add("Expires", Integer.toString(registerExpires))
                 .add("User-Agent", USER_AGENT);
         if (!authorization.isEmpty()) request.add("Authorization", authorization);
         lastRegisterAt = System.currentTimeMillis();
@@ -179,10 +291,24 @@ public final class SipGateway {
     }
 
     private void onRegisterResponse(SipMessage response) {
+        lastRegisterResponseAt = System.currentTimeMillis();
+        if (registerExpires == 0) {
+            // Answer the challenge of an un-REGISTER, but never treat it as a registration.
+            if ((response.status == 401 || response.status == 407) && !registerAuthTried) {
+                registerAuthTried = true;
+                String challenge = response.header(response.status == 401 ? "WWW-Authenticate" : "Proxy-Authenticate");
+                sendRegister(SipMessage.digestAuthorization(challenge, "REGISTER", "sip:" + config.host,
+                        config.username, config.password, token(8)));
+            } else if (response.status >= 200 && response.status < 300) {
+                BridgeLog.info("sip_unregistered");
+            }
+            return;
+        }
         if (response.status == 401 || response.status == 407) {
             if (registerAuthTried) {
                 BridgeLog.info("sip_register_rejected status=" + response.status + " reason=credentials");
                 registered = false;
+                failure = "认证失败：用户名或密码错误（" + response.status + "）";
                 return;
             }
             registerAuthTried = true;
@@ -192,8 +318,10 @@ public final class SipGateway {
         } else if (response.status >= 200 && response.status < 300) {
             if (!registered) BridgeLog.info("sip_registered server=" + config.host + ":" + config.port);
             registered = true;
+            failure = "";
         } else if (response.status >= 300) {
             registered = false;
+            failure = "服务器拒绝注册（" + response.status + " " + response.reason + "）";
             BridgeLog.info("sip_register_failed status=" + response.status);
         }
     }

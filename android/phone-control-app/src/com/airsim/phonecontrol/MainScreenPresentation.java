@@ -31,6 +31,35 @@ public final class MainScreenPresentation {
         return "请连接同一 Wi-Fi / 三星热点，或开启并配置云端 Relay";
     }
 
+    /** Short value for the "SIP 网关" health tile; states match {@code SipGateway.Status}. */
+    public static String sipTileValue(String state, String call) {
+        if ("registered".equals(state)) {
+            return switch (call == null ? "" : call) {
+                case "inbound_ringing" -> "SIP 振铃中";
+                case "outbound_dialing" -> "蜂窝外呼中";
+                case "active" -> "通话中";
+                default -> "已注册";
+            };
+        }
+        if ("connecting".equals(state)) return "注册中";
+        if ("failed".equals(state)) return "注册失败";
+        return "未启用";
+    }
+
+    public static String sipStatusDetail(
+            String state, String detail, String server, String localAddress, String call) {
+        StringBuilder value = new StringBuilder("状态：").append(sipTileValue(state, call));
+        if ("registered".equals(state) && "idle".equals(call)) value.append(" · 空闲，单线路");
+        value.append("\n服务器：").append(server == null || server.isBlank() ? "未配置" : server);
+        if (localAddress != null && !localAddress.isBlank()) value.append("\n本机 SIP：").append(localAddress);
+        if (detail != null && !detail.isBlank()) value.append("\n原因：").append(detail);
+        else if ("connecting".equals(state)) value.append("\n原因：正在连接并注册，请确认与服务器网络可达");
+        else if (!"registered".equals(state) && !"failed".equals(state)) {
+            value.append("\n原因：在下方开启 SIP 网关并填写服务器信息");
+        }
+        return value.toString();
+    }
+
     public static String formatPairingCode(String code) {
         if (code == null) return "--- ---";
         String digits = code.replaceAll("[^0-9]", "");
