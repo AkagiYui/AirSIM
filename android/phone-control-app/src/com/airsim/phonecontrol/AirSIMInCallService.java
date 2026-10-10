@@ -80,6 +80,7 @@ public final class AirSIMInCallService extends InCallService {
 	}
 
     private void emit(String callId, String direction, String state, String number) {
+        SipGateway.get(this).onTelecomState(callId, direction, state, number);
         String eventId = Long.toString(System.currentTimeMillis()) + "-" + events.incrementAndGet();
         String json = WireJson.callEvent(eventId, callId, direction, state, number, AppConfig.mode(this));
         network.execute(() -> {

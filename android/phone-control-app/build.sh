@@ -6,7 +6,7 @@ MANIFEST_SOURCE=${AIRSIM_ANDROID_MANIFEST:-"$ROOT/AndroidManifest.xml"}
 OUTPUT_BASENAME=${AIRSIM_ANDROID_OUTPUT_BASENAME:-AirSIM-Phone-Bridge}
 SDK=${ANDROID_SDK_ROOT:-/opt/homebrew/share/android-commandlinetools}
 BUILD_TOOLS="$SDK/build-tools/35.0.0"
-ANDROID_JAR="$SDK/platforms/android-35/android.jar"
+ANDROID_JAR="$SDK/platforms/${AIRSIM_ANDROID_PLATFORM:-android-35}/android.jar"
 JAVA_HOME=${JAVA_HOME:-/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home}
 export JAVA_HOME
 export PATH="$JAVA_HOME/bin:$PATH"

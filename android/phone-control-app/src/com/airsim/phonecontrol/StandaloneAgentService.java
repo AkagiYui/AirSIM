@@ -53,6 +53,7 @@ public final class StandaloneAgentService extends Service {
         running = true;
         ShizukuBridgeManager.get(this).ensureStarted();
         VoWLANGatewayService.start(this);
+        SipGateway.get(this).start();
         worker.execute(this::loop);
         worker.execute(this::commandLoop);
         BridgeLog.info("standalone_agent_created");
